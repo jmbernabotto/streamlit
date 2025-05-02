@@ -193,15 +193,32 @@ def extract_text_from_docx(file):
     
     return text
 
-def extract_text_from_txt(file):
+def extract_text_from_txt(file_object):
     """Extrait le texte d'un fichier TXT avec gestion d'erreurs améliorée"""
     try:
-        return file.getvalue().decode("utf-8")
+        # Si c'est un objet UploadedFile (de l'interface Streamlit)
+        if hasattr(file_object, 'getvalue'):
+            return file_object.getvalue().decode("utf-8")
+        # Si c'est un objet BufferedReader (fichier ouvert)
+        else:
+            file_object.seek(0)  # Retour au début du fichier
+            content = file_object.read()
+            if isinstance(content, bytes):
+                return content.decode("utf-8")
+            return content
     except UnicodeDecodeError:
         # Essaie avec différents encodages si UTF-8 échoue
-        for encoding in ['latin-1', 'iso-8859-1', 'windows-1252']:
+        encodings = ['latin-1', 'iso-8859-1', 'windows-1252']
+        for encoding in encodings:
             try:
-                return file.getvalue().decode(encoding)
+                if hasattr(file_object, 'getvalue'):
+                    return file_object.getvalue().decode(encoding)
+                else:
+                    file_object.seek(0)
+                    content = file_object.read()
+                    if isinstance(content, bytes):
+                        return content.decode(encoding)
+                    return content
             except UnicodeDecodeError:
                 continue
         st.error("Impossible de déterminer l'encodage du fichier texte.")
@@ -223,10 +240,14 @@ def process_file(file_content, file_name):
     try:
         if file_extension == '.pdf':
             with open(temp_path, 'rb') as f:
-                result = extract_text_from_pdf(f)
+                uploaded_file = type('', (), {})()  # Crée un objet vide
+                uploaded_file.getvalue = lambda: file_content  # Ajoute une méthode getvalue
+                result = extract_text_from_pdf(uploaded_file)
         elif file_extension == '.docx':
             with open(temp_path, 'rb') as f:
-                result = extract_text_from_docx(f)
+                uploaded_file = type('', (), {})()  # Crée un objet vide
+                uploaded_file.getvalue = lambda: file_content  # Ajoute une méthode getvalue
+                result = extract_text_from_docx(uploaded_file)
         elif file_extension == '.txt':
             with open(temp_path, 'rb') as f:
                 result = extract_text_from_txt(f)
