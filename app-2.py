@@ -5,18 +5,18 @@ import tempfile
 import time
 from pathlib import Path
 import json
-from streamlit.components.v1 import html
+import re
+from concurrent.futures import ThreadPoolExecutor
 
 # Bibliothèques pour traiter différents types de documents
 import PyPDF2
 import docx
 import io
-import re
 
 # Configuration de la page Streamlit
 st.set_page_config(
     page_title="Assistant IA - Dialogue & Q&A sur Documents",
-    page_icon="🤖",
+    page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -79,12 +79,45 @@ st.markdown("""
 .upload-button:hover {
     background-color: #f0f2f6;
 }
+/* Styles pour les avatars améliorés */
+.avatar-user {
+    background-color: #3498db;
+    color: white;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+}
+.avatar-assistant {
+    background-color: #2ecc71;
+    color: white;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    width: 40px;
+    height: 40px;
+}
 </style>
 """, unsafe_allow_html=True)
 
+# Fonction de cache pour éviter de recalculer des résultats déjà obtenus
+@st.cache_data(ttl=3600)
+def get_api_credentials():
+    """Récupère les identifiants d'API avec mise en cache"""
+    return {
+        "base_url": os.environ.get("SCALEWAY_API_BASE_URL"),
+        "api_key": os.environ.get("SCALEWAY_API_KEY")
+    }
+
 # Configuration de l'API Scaleway
-API_BASE_URL = os.environ.get("SCALEWAY_API_BASE_URL")
-API_KEY = os.environ.get("SCALEWAY_API_KEY")
+api_creds = get_api_credentials()
+API_BASE_URL = api_creds["base_url"]
+API_KEY = api_creds["api_key"]
 
 if not API_BASE_URL or not API_KEY:
     st.error("Les variables d'environnement SCALEWAY_API_BASE_URL et SCALEWAY_API_KEY doivent être définies.")
@@ -98,63 +131,116 @@ TOP_P = 0.9
 PRESENCE_PENALTY = 0.0
 STOP_SEQUENCE = ["/stop"]
 
-# Initialisation des variables de session si elles n'existent pas déjà
-if 'conversation_history' not in st.session_state:
-    st.session_state.conversation_history = [
-        {"role": "system", "content": "Tu es un assistant intelligent qui répond en français même si la question est dans une autre langue. Tu peux discuter de tout sujet et analyser des documents si l'utilisateur en fournit."}
-    ]
+# Initialisation des variables de session avec un mécanisme plus robuste
+def init_session_state():
+    """Initialise les variables de session de façon plus structurée"""
+    if 'initialized' not in st.session_state:
+        st.session_state.conversation_history = [
+            {"role": "system", "content": "Tu es un assistant intelligent qui répond en français même si la question est dans une autre langue. Tu peux discuter de tout sujet et analyser des documents si l'utilisateur en fournit."}
+        ]
+        st.session_state.chat_messages = []
+        st.session_state.documents = {}  # Dictionnaire pour stocker {nom_document: contenu}
+        st.session_state.submitted = False
+        st.session_state.initialized = True
 
-if 'chat_messages' not in st.session_state:
-    st.session_state.chat_messages = []
-
-if 'documents' not in st.session_state:
-    st.session_state.documents = {}  # Dictionnaire pour stocker {nom_document: contenu}
-
-if 'submitted' not in st.session_state:
-    st.session_state.submitted = False
+# Appel de l'initialisation
+init_session_state()
 
 # Fonctions pour extraire le texte de différents formats de documents
 def extract_text_from_pdf(file):
-    """Extrait le texte d'un fichier PDF"""
+    """Extrait le texte d'un fichier PDF avec gestion d'erreurs améliorée"""
     text = ""
-    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
-        temp_file.write(file.getvalue())
-        temp_file_path = temp_file.name
+    try:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+            temp_file.write(file.getvalue())
+            temp_file_path = temp_file.name
+        
+        with open(temp_file_path, 'rb') as pdf_file:
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            # Utilisation de ThreadPoolExecutor pour le traitement parallèle des pages
+            with ThreadPoolExecutor() as executor:
+                def extract_page_text(page_num):
+                    return pdf_reader.pages[page_num].extract_text() + "\n\n"
+                
+                # Extraction parallèle du texte des pages
+                page_texts = list(executor.map(extract_page_text, range(len(pdf_reader.pages))))
+                text = "".join(page_texts)
+        
+        os.unlink(temp_file_path)  # Supprimer le fichier temporaire
+    except Exception as e:
+        st.error(f"Erreur lors de l'extraction du texte du PDF: {str(e)}")
     
-    with open(temp_file_path, 'rb') as pdf_file:
-        pdf_reader = PyPDF2.PdfReader(pdf_file)
-        for page_num in range(len(pdf_reader.pages)):
-            page = pdf_reader.pages[page_num]
-            text += page.extract_text() + "\n\n"
-    
-    os.unlink(temp_file_path)  # Supprimer le fichier temporaire
     return text
 
 def extract_text_from_docx(file):
-    """Extrait le texte d'un fichier DOCX"""
-    doc = docx.Document(io.BytesIO(file.getvalue()))
+    """Extrait le texte d'un fichier DOCX avec gestion d'erreurs améliorée"""
     text = ""
-    for para in doc.paragraphs:
-        text += para.text + "\n"
+    try:
+        doc = docx.Document(io.BytesIO(file.getvalue()))
+        # Extraction du texte des paragraphes et des tableaux
+        for para in doc.paragraphs:
+            text += para.text + "\n"
+        
+        # Extraction du texte des tableaux
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    text += cell.text + " "
+                text += "\n"
+            text += "\n"
+    except Exception as e:
+        st.error(f"Erreur lors de l'extraction du texte du DOCX: {str(e)}")
+    
     return text
 
 def extract_text_from_txt(file):
-    """Extrait le texte d'un fichier TXT"""
-    return file.getvalue().decode("utf-8")
-
-def process_file(uploaded_file):
-    """Traite le fichier uploadé et extrait son contenu textuel"""
-    file_extension = Path(uploaded_file.name).suffix.lower()
-    
-    if file_extension == '.pdf':
-        return extract_text_from_pdf(uploaded_file)
-    elif file_extension == '.docx':
-        return extract_text_from_docx(uploaded_file)
-    elif file_extension == '.txt':
-        return extract_text_from_txt(uploaded_file)
-    else:
-        st.error(f"Format de fichier non pris en charge: {file_extension}")
+    """Extrait le texte d'un fichier TXT avec gestion d'erreurs améliorée"""
+    try:
+        return file.getvalue().decode("utf-8")
+    except UnicodeDecodeError:
+        # Essaie avec différents encodages si UTF-8 échoue
+        for encoding in ['latin-1', 'iso-8859-1', 'windows-1252']:
+            try:
+                return file.getvalue().decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        st.error("Impossible de déterminer l'encodage du fichier texte.")
         return ""
+    except Exception as e:
+        st.error(f"Erreur lors de l'extraction du texte du fichier TXT: {str(e)}")
+        return ""
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def process_file(file_content, file_name):
+    """Traite le fichier uploadé et extrait son contenu textuel (version avec cache)"""
+    file_extension = Path(file_name).suffix.lower()
+    
+    # Création d'un fichier temporaire avec le contenu
+    with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+        temp_file.write(file_content)
+        temp_path = temp_file.name
+    
+    try:
+        if file_extension == '.pdf':
+            with open(temp_path, 'rb') as f:
+                result = extract_text_from_pdf(f)
+        elif file_extension == '.docx':
+            with open(temp_path, 'rb') as f:
+                result = extract_text_from_docx(f)
+        elif file_extension == '.txt':
+            with open(temp_path, 'rb') as f:
+                result = extract_text_from_txt(f)
+        else:
+            st.error(f"Format de fichier non pris en charge: {file_extension}")
+            result = ""
+    finally:
+        # Nettoyage du fichier temporaire
+        try:
+            os.unlink(temp_path)
+        except:
+            pass
+            
+    return result
 
 def get_chunks(text, chunk_size=3000, overlap=200):
     """Divise le texte en chunks pour gérer les documents longs"""
@@ -162,23 +248,32 @@ def get_chunks(text, chunk_size=3000, overlap=200):
     if not text:
         return chunks
         
-    # Simple chunking par caractères avec overlap
+    # Chunking amélioré avec détection de phrases
     start = 0
     while start < len(text):
         end = min(start + chunk_size, len(text))
         if end < len(text) and end - start == chunk_size:
             # Chercher la fin de phrase/paragraphe la plus proche pour une coupure propre
-            for i in range(end, max(end - 200, start), -1):
-                if i < len(text) and text[i] in ['.', '!', '?', '\n'] and (i+1 >= len(text) or text[i+1].isspace()):
-                    end = i + 1
-                    break
+            # Recherche plus sophistiquée avec pattern de fin de phrase
+            sentence_end_pattern = re.compile(r'[.!?]\s+')
+            matches = list(sentence_end_pattern.finditer(text[end-200:end]))
+            if matches:
+                # Utilise la dernière correspondance trouvée
+                last_match = matches[-1]
+                end = end - 200 + last_match.end()
+            else:
+                # Cherche une fin de ligne si pas de fin de phrase
+                newline_matches = list(re.finditer(r'\n', text[end-200:end]))
+                if newline_matches:
+                    last_newline = newline_matches[-1]
+                    end = end - 200 + last_newline.end()
                     
         chunks.append(text[start:end])
         start = end - overlap if end < len(text) else end
     
     return chunks
 
-def create_context_for_question(question, documents, max_length=5000):
+def create_context_for_question(question, documents, max_length=6000):
     """Crée un contexte pertinent pour la question en utilisant les documents disponibles"""
     if not documents:
         return ""
@@ -193,46 +288,67 @@ def create_context_for_question(question, documents, max_length=5000):
     if len(all_text) <= max_length:
         return all_text
     
-    # Pour les documents plus grands, on essaie de trouver les chunks les plus pertinents
+    # Pour les documents plus grands, on utilise une méthode de recherche plus sophistiquée
     chunks = get_chunks(all_text)
     
-    # Extrait les mots significatifs de la question
+    # Analyse sémantique améliorée de la question
+    # Extraction des mots-clés avec élimination des stopwords
     words = re.findall(r'\b\w+\b', question.lower())
     stopwords = set(['le', 'la', 'les', 'un', 'une', 'des', 'et', 'est', 'à', 'au', 'aux', 
                     'de', 'du', 'en', 'ce', 'cette', 'ces', 'qui', 'que', 'quoi', 'où', 
-                    'comment', 'pourquoi', 'quand', 'quel', 'quelle', 'quels', 'quelles'])
+                    'comment', 'pourquoi', 'quand', 'quel', 'quelle', 'quels', 'quelles',
+                    'il', 'elle', 'ils', 'elles', 'nous', 'vous', 'leur', 'leurs', 'son',
+                    'sa', 'ses', 'mon', 'ma', 'mes', 'ton', 'ta', 'tes', 'pour', 'par',
+                    'avec', 'sans', 'mais', 'ou', 'où', 'donc', 'or', 'ni', 'car', 'sur'])
+    
     keywords = [word for word in words if word not in stopwords and len(word) > 2]
     
-    # Score chaque chunk en fonction du nombre de mots-clés qu'il contient
-    chunk_scores = []
-    for i, chunk in enumerate(chunks):
-        score = 0
-        chunk_lower = chunk.lower()
-        for keyword in keywords:
-            score += chunk_lower.count(keyword)
-        chunk_scores.append((i, score))
-    
-    # Trie les chunks par score et prend les meilleurs jusqu'à atteindre max_length
-    sorted_chunks = sorted(chunk_scores, key=lambda x: x[1], reverse=True)
-    selected_chunks = []
-    total_length = 0
-    
-    for chunk_idx, _ in sorted_chunks:
-        if total_length + len(chunks[chunk_idx]) <= max_length:
-            selected_chunks.append(chunk_idx)
-            total_length += len(chunks[chunk_idx])
-        else:
-            break
-    
-    # Si aucun chunk n'a de score positif, on prend simplement les premiers chunks
-    if not selected_chunks:
-        current_length = 0
+    if not keywords:
+        # Si pas de mots-clés significatifs, on prend les premiers chunks
+        selected_chunks = list(range(min(5, len(chunks))))
+    else:
+        # Score chaque chunk en fonction de la pertinence
+        chunk_scores = []
         for i, chunk in enumerate(chunks):
-            if current_length + len(chunk) <= max_length:
-                selected_chunks.append(i)
-                current_length += len(chunk)
-            else:
-                break
+            chunk_lower = chunk.lower()
+            
+            # Score basé sur la fréquence des mots-clés avec pondération
+            base_score = 0
+            for keyword in keywords:
+                # Donne un poids plus élevé aux mots plus longs (supposés plus significatifs)
+                weight = min(1.0, 0.5 + (len(keyword) / 10))
+                count = chunk_lower.count(keyword)
+                base_score += count * weight
+            
+            # Bonus pour les chunks contenant des phrases complètes de la question
+            question_phrases = re.split(r'[.!?]', question.lower())
+            phrase_bonus = 0
+            for phrase in question_phrases:
+                if len(phrase.strip()) > 10 and phrase.strip() in chunk_lower:
+                    phrase_bonus += 2
+            
+            final_score = base_score + phrase_bonus
+            chunk_scores.append((i, final_score))
+        
+        # Trie les chunks par score et prend les meilleurs jusqu'à atteindre max_length
+        sorted_chunks = sorted(chunk_scores, key=lambda x: x[1], reverse=True)
+        
+        # Sélectionne les chunks avec le meilleur score
+        selected_chunks = []
+        total_length = 0
+        
+        for chunk_idx, score in sorted_chunks:
+            if score > 0 and total_length + len(chunks[chunk_idx]) <= max_length:
+                selected_chunks.append(chunk_idx)
+                total_length += len(chunks[chunk_idx])
+        
+        # Si aucun chunk n'a de score positif ou si on n'a pas assez de contenu
+        if not selected_chunks or total_length < max_length * 0.5:
+            # Ajoute des chunks supplémentaires au début du document
+            for i in range(min(3, len(chunks))):
+                if i not in selected_chunks and total_length + len(chunks[i]) <= max_length:
+                    selected_chunks.append(i)
+                    total_length += len(chunks[i])
     
     # Trie les indices pour préserver l'ordre original des documents
     selected_chunks.sort()
@@ -257,22 +373,24 @@ def add_message(role, content, attached_docs=None):
 
 # Fonction pour afficher les messages de chat avec un style amélioré
 def display_messages():
-    for msg in st.session_state.chat_messages:
+    for idx, msg in enumerate(st.session_state.chat_messages):
         role = msg["role"]
         content = msg["content"]
         attached_docs = msg.get("attached_docs", None)
         
         if role == "user":
-            avatar_url = "https://api.dicebear.com/7.x/avataaars/svg?seed=user"
+            # Utilisation d'un avatar personnalisé au lieu de DiceBear
+            avatar_html = '<div class="avatar-user">U</div>'
             bg_color = "user"
         else:
-            avatar_url = "https://api.dicebear.com/7.x/bottts/svg?seed=assistant"
+            # Utilisation d'un avatar personnalisé au lieu de DiceBear
+            avatar_html = '<div class="avatar-assistant">A</div>'
             bg_color = "assistant"
         
-        # Construit l'affichage du message
+        # Construit l'affichage du message avec markdown pour le contenu
         message_html = f"""
-        <div class="chat-message {bg_color}">
-            <img src="{avatar_url}" class="avatar">
+        <div class="chat-message {bg_color}" id="message-{idx}">
+            {avatar_html}
             <div class="message">
                 {content}
         """
@@ -288,38 +406,16 @@ def display_messages():
         
         st.markdown(message_html, unsafe_allow_html=True)
 
-# Fonction pour gérer l'envoi du message lorsque l'utilisateur appuie sur Cmd+Enter ou Ctrl+Enter
-def handle_submit():
-    user_input = st.session_state.user_input
-    attached_docs = []
-    
-    # Récupère les fichiers attachés s'ils existent
-    if "file_upload" in st.session_state and st.session_state.file_upload:
-        for uploaded_file in st.session_state.file_upload:
-            file_name = uploaded_file.name
-            document_text = process_file(uploaded_file)
-            if document_text:
-                st.session_state.documents[file_name] = document_text
-                attached_docs.append(file_name)
-    
-    if not user_input.strip() and not attached_docs:
-        st.warning("Veuillez entrer un message ou joindre un document.")
-        return
-    
-    # Marquer comme soumis
-    st.session_state.submitted = True
+# Cache du client OpenAI pour éviter de le recréer à chaque interaction
+@st.cache_resource
+def get_openai_client():
+    """Récupère un client OpenAI avec mise en cache"""
+    return OpenAI(
+        base_url=API_BASE_URL,
+        api_key=API_KEY
+    )
 
-    # Si aucun message mais des documents attachés, on pose une question générique
-    if not user_input.strip() and attached_docs:
-        user_input = "Peux-tu analyser ce(s) document(s) et me dire ce qu'il(s) contien(nen)t?"
-    
-    # Ajoute le message à l'interface
-    add_message("user", user_input, attached_docs)
-    
-    # Traitement du message et génération de la réponse... (le reste de la logique d'envoi)
-    # (Le code existant pour le traitement de la réponse)
-
-# Interface utilisateur Streamlit
+# Interface utilisateur Streamlit optimisée
 def main():
     # Sidebar pour les paramètres
     with st.sidebar:
@@ -338,12 +434,22 @@ def main():
                         st.success(f"Document '{doc_name}' supprimé")
                         st.rerun()
         
-        # Paramètres avancés (collapsible)
+        # Paramètres avancés
         with st.expander("⚙️ Paramètres avancés", expanded=False):
             st.slider("Température", min_value=0.0, max_value=1.0, value=TEMPERATURE, step=0.1, key="temperature", 
                       help="Contrôle la créativité des réponses (0=déterministe, 1=créatif)")
-            st.slider("Longueur maximale", min_value=100, max_value=2000, value=MAX_TOKENS, step=100, key="max_tokens",
+            st.slider("Longueur maximale", min_value=100, max_value=4096, value=MAX_TOKENS, step=100, key="max_tokens",
                       help="Nombre maximum de tokens dans la réponse")
+            
+            # Option pour télécharger l'historique de conversation
+            if st.button("Télécharger l'historique"):
+                conversation_json = json.dumps(st.session_state.chat_messages, ensure_ascii=False, indent=2)
+                st.download_button(
+                    label="Télécharger JSON",
+                    data=conversation_json,
+                    file_name="conversation_history.json",
+                    mime="application/json",
+                )
             
             if st.button("Réinitialiser la conversation"):
                 st.session_state.conversation_history = [
@@ -354,12 +460,13 @@ def main():
                 st.success("Conversation réinitialisée!")
                 st.rerun()
 
-    # Contenu principal
-    st.title("🤖 Assistant IA - Dialogue & Documents")
+    # Contenu principal avec style amélioré
+    st.title("🧠 Assistant IA - Dialogue & Documents")
     st.write("Discutez avec l'assistant et attachez des documents au besoin pour poser des questions dessus.")
     
     # Affichage des messages de chat
-    display_messages()
+    with st.container():
+        display_messages()
     
     # Zone de saisie pour la question avec bouton "trombone" pour upload
     st.write("### Envoyez un message")
@@ -383,8 +490,8 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
+    # Réinitialisation après soumission
     if st.session_state.submitted:
-        # Si un message vient d'être soumis, réinitialiser
         st.session_state.user_input = ""
         st.session_state.submitted = False
     
@@ -393,7 +500,7 @@ def main():
         user_input = st.text_area("Votre message:", height=100, key="user_input", 
                                  label_visibility="collapsed")
 
-    # Zone des fichiers attachés à ce message
+    # Traitement des fichiers téléchargés
     attached_docs = []
     
     if uploaded_files:
@@ -406,19 +513,23 @@ def main():
                 file_name = uploaded_file.name
                 st.write(f"📎 {file_name}")
                 
-                # Traite le fichier
+                # Traite le fichier avec indication de progression
                 with st.spinner(f"Traitement de {file_name}..."):
-                    document_text = process_file(uploaded_file)
+                    # Utilise la version en cache du traitement de fichier
+                    document_text = process_file(uploaded_file.getvalue(), file_name)
                     if document_text:
                         # Stocke le document
                         st.session_state.documents[file_name] = document_text
                         attached_docs.append(file_name)
                         st.success(f"✓ ({len(document_text)} caractères)")
                     else:
-                        st.error("Échec")
+                        st.error("Échec du traitement")
     
-    # Bouton d'envoi + Callback pour le raccourci clavier
-    if st.button("Envoyer", key="send_message"):
+    # Bouton d'envoi
+    send_button = st.button("Envoyer", key="send_message")
+    
+    # Détecter si Cmd+Enter ou Ctrl+Enter est pressé
+    if send_button or (user_input and user_input.endswith('\n')):
         if not user_input.strip() and not attached_docs:
             st.warning("Veuillez entrer un message ou joindre un document.")
             st.stop()
@@ -430,6 +541,9 @@ def main():
         if not user_input.strip() and attached_docs:
             user_input = "Peux-tu analyser ce(s) document(s) et me dire ce qu'il(s) contien(nen)t?"
         
+        # Nettoie l'entrée utilisateur (supprime les \n ajoutés par Cmd+Enter)
+        user_input = user_input.strip()
+        
         # Ajoute le message à l'interface
         add_message("user", user_input, attached_docs)
         
@@ -438,7 +552,8 @@ def main():
         if attached_docs:
             # Sélectionne seulement les documents joints à ce message
             docs_for_context = {name: content for name, content in st.session_state.documents.items() if name in attached_docs}
-            document_context = create_context_for_question(user_input, docs_for_context)
+            with st.spinner("Analyse des documents..."):
+                document_context = create_context_for_question(user_input, docs_for_context)
         
         # Prépare le prompt avec le contexte du document si nécessaire
         if document_context:
@@ -446,7 +561,6 @@ def main():
             system_message = {"role": "system", "content": "Tu es un assistant intelligent qui répond en français. Tu peux analyser des documents fournis par l'utilisateur et répondre à des questions à leur sujet."}
             
             # Construit la liste des messages pour l'API
-            # Inclut les messages précédents pour maintenir la cohérence de la conversation
             messages = [system_message]
             
             # Ajoute les messages précédents mais pas le dernier (qui sera traité spécialement)
@@ -469,15 +583,11 @@ Réponds à ma question en te basant sur les informations fournies dans ces docu
             system_message = {"role": "system", "content": "Tu es un assistant intelligent qui répond en français même si la question est dans une autre langue."}
             messages = [system_message] + st.session_state.conversation_history[1:]
         
-        # Initialise le client OpenAI
-        client = OpenAI(
-            base_url=API_BASE_URL,
-            api_key=API_KEY
-        )
+        # Récupère le client OpenAI mis en cache
+        client = get_openai_client()
         
         # Affiche un placeholder pour la réponse en streaming
         with st.spinner("Génération de la réponse..."):
-            response_placeholder = st.empty()
             full_response = ""
             
             try:
@@ -495,7 +605,6 @@ Réponds à ma question en te basant sur les informations fournies dans ces docu
                 
                 # Conteneur pour afficher la réponse en streaming
                 with st.container():
-                    assistant_avatar = "https://api.dicebear.com/7.x/bottts/svg?seed=assistant"
                     # Commence l'affichage du message
                     message_container = st.empty()
                     
@@ -505,10 +614,10 @@ Réponds à ma question en te basant sur les informations fournies dans ces docu
                             content = chunk.choices[0].delta.content
                             full_response += content
                             
-                            # Met à jour l'affichage du message
+                            # Met à jour l'affichage du message avec l'avatar personnalisé
                             message_html = f"""
                             <div class="chat-message assistant">
-                                <img src="{assistant_avatar}" class="avatar">
+                                <div class="avatar-assistant">A</div>
                                 <div class="message">
                                     {full_response}
                                 </div>
@@ -521,18 +630,18 @@ Réponds à ma question en te basant sur les informations fournies dans ces docu
                 add_message("assistant", full_response)
                 
                 # Vide les champs pour le prochain message
-                if "user_input" in st.session_state:
-                  del st.session_state.user_input
+                st.session_state.user_input = ""
                 if "file_upload" in st.session_state:
-                  del st.session_state.file_upload
+                    del st.session_state.file_upload
                 
                 # Rerun pour actualiser l'interface
                 st.rerun()
                 
             except Exception as e:
                 st.error(f"Erreur lors de la génération de la réponse: {str(e)}")
+                # Log plus détaillé de l'erreur pour le débogage
+                st.error(f"Détails de l'erreur: {type(e).__name__}")
 
-    # On n'a plus besoin de ce composant car on utilise l'approche avec on_change
-
+# Point d'entrée de l'application
 if __name__ == "__main__":
     main()
