@@ -495,6 +495,11 @@ def main():
         st.session_state.user_input = ""
         st.session_state.submitted = False
     
+    # Réinitialisation du champ de saisie si nécessaire
+    if 'clear_input' in st.session_state and st.session_state.clear_input:
+        st.session_state.user_input = ""
+        st.session_state.clear_input = False
+    
     # Affichage du champ de saisie
     with col1:
         user_input = st.text_area("Votre message:", height=100, key="user_input", 
@@ -629,8 +634,11 @@ Réponds à ma question en te basant sur les informations fournies dans ces docu
                 # Ajoute la réponse complète à l'historique de conversation
                 add_message("assistant", full_response)
                 
-                # Vide les champs pour le prochain message
-                st.session_state.user_input = ""
+                # Pour réinitialiser le champ de saisie, nous utilisons une approche différente
+                # Au lieu de modifier directement st.session_state.user_input, nous définissons un drapeau
+                st.session_state.clear_input = True
+                
+                # Nettoyage du champ de fichier
                 if "file_upload" in st.session_state:
                     del st.session_state.file_upload
                 
