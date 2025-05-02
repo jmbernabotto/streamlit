@@ -83,8 +83,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Configuration de l'API Scaleway
-API_BASE_URL = "https://api.scaleway.ai/f754c3d7-7ed4-4e24-a716-97f5e7aa2916/v1"
-API_KEY = "5c4074e2-bad9-4bec-a8bb-a569c63ba846"
+API_BASE_URL = os.environ.get("SCALEWAY_API_BASE_URL")
+API_KEY = os.environ.get("SCALEWAY_API_KEY")
+
+if not API_BASE_URL or not API_KEY:
+    st.error("Les variables d'environnement SCALEWAY_API_BASE_URL et SCALEWAY_API_KEY doivent être définies.")
+    st.stop()
 
 # Paramètres du modèle
 MODEL = "llama-3.3-70b-instruct"
