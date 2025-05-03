@@ -565,16 +565,43 @@ def main():
     
     st.write("Discutez avec l'assistant et attachez des documents au besoin pour poser des questions dessus.")
     
-    # Affichage des messages de chat
+    # Initialisation des variables d'état
+    if "form_submitted" not in st.session_state:
+        st.session_state.form_submitted = False
+    if "waiting_for_response" not in st.session_state:
+        st.session_state.waiting_for_response = False
+    if "last_user_message" not in st.session_state:
+        st.session_state.last_user_message = None
+    if "last_attached_docs" not in st.session_state:
+        st.session_state.last_attached_docs = []
+        
+    # Affichage des messages de chat (historique)
     with st.container():
         display_messages()
+        
+    # Affichage du message en cours de traitement (si applicable)
+    if st.session_state.waiting_for_response and st.session_state.last_user_message:
+        # Affiche temporairement le message utilisateur en attente de réponse
+        message_html = f"""
+        <div class="chat-message user">
+            <div class="avatar-user">👤</div>
+            <div class="message">
+                {st.session_state.last_user_message}
+        """
+        
+        # Ajoute des indicateurs pour les documents attachés
+        if st.session_state.last_attached_docs:
+            message_html += '<div class="doc-indicator">Documents attachés: '
+            for doc in st.session_state.last_attached_docs:
+                message_html += f'<span class="document-pill">📄 {doc}</span>'
+            message_html += '</div>'
+        
+        message_html += "</div></div>"
+        
+        st.markdown(message_html, unsafe_allow_html=True)
     
     # Zone de saisie pour la question
     st.write("### Envoyez un message")
-    
-    # Initialisation des clés de session
-    if "form_submitted" not in st.session_state:
-        st.session_state.form_submitted = False
     
     # On utilise un formulaire pour empêcher l'exécution multiple
     with st.form(key="message_form", clear_on_submit=True):
@@ -645,8 +672,16 @@ def main():
         if not message_text and attached_docs:
             message_text = "Peux-tu analyser ce(s) document(s) et me dire ce qu'il(s) contien(nen)t?"
         
-        # Ajoute le message à l'interface
-        add_message("user", message_text, attached_docs)
+        # Stocke le message et les documents pour l'affichage temporaire
+        st.session_state.last_user_message = message_text
+        st.session_state.last_attached_docs = attached_docs
+        st.session_state.waiting_for_response = True
+        
+        # Ajoute le message à l'historique de conversation (mais pas encore à l'affichage)
+        st.session_state.conversation_history.append({
+            "role": "user",
+            "content": message_text
+        })
         
         # Prépare le contexte des documents si applicable
         document_context = ""
@@ -727,11 +762,15 @@ Réponds à ma question en te basant sur les informations fournies dans ces docu
                             message_container.markdown(message_html, unsafe_allow_html=True)
                             time.sleep(0.01)
                 
-                # Ajoute la réponse complète à l'historique de conversation
+                # Une fois la réponse complète, ajoute les deux messages à l'interface de chat
+                add_message("user", message_text, attached_docs)
                 add_message("assistant", full_response)
                 
                 # Réinitialise l'état pour permettre une nouvelle soumission
                 st.session_state.form_submitted = False
+                st.session_state.waiting_for_response = False
+                st.session_state.last_user_message = None
+                st.session_state.last_attached_docs = []
                 
                 # Rafraîchit l'interface pour afficher la réponse complète
                 st.rerun()
@@ -742,6 +781,7 @@ Réponds à ma question en te basant sur les informations fournies dans ces docu
                 st.error(f"Détails de l'erreur: {type(e).__name__}")
                 # Réinitialise l'état pour permettre une nouvelle soumission
                 st.session_state.form_submitted = False
+                st.session_state.waiting_for_response = False
 
 # Point d'entrée de l'application
 if __name__ == "__main__":
