@@ -608,16 +608,6 @@ def main():
     with st.container():
         display_messages()
     
-    # Reste du code main() inchangé...
-
-    # Contenu principal avec style amélioré
-    st.title("🧠 Assistant IA - Dialogue & Documents")
-    st.write("Discutez avec l'assistant et attachez des documents au besoin pour poser des questions dessus.")
-    
-    # Affichage des messages de chat
-    with st.container():
-        display_messages()
-    
     # Zone de saisie pour la question avec bouton "trombone" pour upload
     st.write("### Envoyez un message")
     
