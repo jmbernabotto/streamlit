@@ -487,6 +487,8 @@ def get_openai_client():
     )
 
 # Interface utilisateur Streamlit optimisée
+# Remplacez la partie initiale du code main() par cette version
+
 def main():
     # Sidebar pour les paramètres
     with st.sidebar:
@@ -530,6 +532,83 @@ def main():
                 st.session_state.documents = {}
                 st.success("Conversation réinitialisée!")
                 st.rerun()
+
+    # Contenu principal avec style amélioré
+    # Header avec titre et bouton Nouvelle Conversation
+    st.markdown("""
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+        <h1 style="margin: 0;">🧠 Assistant IA - Dialogue & Documents</h1>
+        <button id="new-conversation-btn" style="
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+        " onclick="newConversation()">
+            <span style="font-size: 1.2rem; margin-right: 5px;">➕</span> Nouvelle
+        </button>
+    </div>
+    <p>Discutez avec l'assistant et attachez des documents au besoin pour poser des questions dessus.</p>
+    
+    <script>
+        function newConversation() {
+            // Envoyer un message à Streamlit pour déclencher le bouton caché
+            window.parent.postMessage({
+                type: "streamlit:setComponentValue",
+                value: true,
+                componentId: "new_conversation_hidden"
+            }, "*");
+        }
+    </script>
+    """, unsafe_allow_html=True)
+    
+    # Bouton caché qui sera cliqué via JavaScript
+    if st.button("New Conversation", key="new_conversation_hidden", help="Hidden button for new conversation"):
+        st.session_state.conversation_history = [
+            {"role": "system", "content": "Tu es un assistant intelligent qui répond en français même si la question est dans une autre langue. Tu peux discuter de tout sujet et analyser des documents si l'utilisateur en fournit."}
+        ]
+        st.session_state.chat_messages = []
+        st.session_state.documents = {}
+        st.success("Nouvelle conversation démarrée!")
+        st.rerun()
+    
+    # Cacher le bouton avec CSS
+    st.markdown("""
+    <style>
+        [data-testid="baseButton-secondary"]:has(#new_conversation_hidden) {
+            display: none !important;
+        }
+        #new-conversation-btn:hover {
+            background-color: #45a049 !important;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.3) !important;
+            transform: translateY(-2px) !important;
+        }
+        div[data-testid="stSuccessMessage"] {
+            position: fixed !important;
+            top: 20px !important;
+            right: 20px !important;
+            z-index: 9999 !important;
+            animation: fadeOut 3s forwards !important;
+            animation-delay: 2s !important;
+        }
+        @keyframes fadeOut {
+            from { opacity: 1; }
+            to { opacity: 0; visibility: hidden; }
+        }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # Affichage des messages de chat
+    with st.container():
+        display_messages()
+    
+    # Reste du code main() inchangé...
 
     # Contenu principal avec style amélioré
     st.title("🧠 Assistant IA - Dialogue & Documents")
