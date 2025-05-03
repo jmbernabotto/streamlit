@@ -652,12 +652,20 @@ def main():
     send_button = st.button("Envoyer", key="send_message")
     
     # Détection de l'envoi (bouton ou Cmd+Enter)
+    # Utilisation d'un état de session pour suivre si un message a été soumis
+    if 'submitted' not in st.session_state:
+        st.session_state.submitted = False
+        
     send_pressed = send_button or (user_input and user_input.endswith('\n'))
     
-    if send_pressed:
+    if send_pressed and not st.session_state.submitted:
+        # Marquer comme soumis pour éviter le double traitement
+        st.session_state.submitted = True
+        
         # Vérification qu'il y a un message ou un document
         if not user_input.strip() and not attached_docs:
             st.warning("Veuillez entrer un message ou joindre un document.")
+            st.session_state.submitted = False
         else:
             # Nettoie l'entrée utilisateur
             cleaned_input = user_input.strip()
@@ -751,6 +759,9 @@ Réponds à ma question en te basant sur les informations fournies dans ces docu
                     # Indique que le champ de saisie doit être vidé
                     st.session_state.clear_input = True
                     
+                    # Réinitialise l'état de soumission pour le prochain message
+                    st.session_state.submitted = False
+                    
                     # Supprime les données du file uploader
                     if "file_upload" in st.session_state:
                         del st.session_state.file_upload
@@ -761,6 +772,8 @@ Réponds à ma question en te basant sur les informations fournies dans ces docu
                 except Exception as e:
                     st.error(f"Erreur lors de la génération de la réponse: {str(e)}")
                     st.error(f"Détails de l'erreur: {type(e).__name__}")
+                    # Réinitialise l'état de soumission en cas d'erreur
+                    st.session_state.submitted = False
 
 # Point d'entrée de l'application
 if __name__ == "__main__":
