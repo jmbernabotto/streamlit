@@ -524,8 +524,7 @@ def main():
                     mime="application/json",
                 )
             
-            # Bouton de réinitialisation dans les paramètres avancés
-            if st.button("Réinitialiser la conversation", key="reset_conversation_advanced"):
+            if st.button("Réinitialiser la conversation"):
                 st.session_state.conversation_history = [
                     {"role": "system", "content": "Tu es un assistant intelligent qui répond en français même si la question est dans une autre langue. Tu peux discuter de tout sujet et analyser des documents si l'utilisateur en fournit."}
                 ]
@@ -539,7 +538,7 @@ def main():
     with col1:
         st.title("🧠 Assistant IA - Dialogue & Documents")
     with col2:
-        # Bouton Nouvelle Conversation simple et direct avec Streamlit
+        # Bouton Nouvelle Conversation simple
         if st.button("➕ Nouvelle", key="new_conversation", use_container_width=True):
             st.session_state.conversation_history = [
                 {"role": "system", "content": "Tu es un assistant intelligent qui répond en français même si la question est dans une autre langue. Tu peux discuter de tout sujet et analyser des documents si l'utilisateur en fournit."}
@@ -552,36 +551,11 @@ def main():
     # Style CSS pour le bouton Nouvelle
     st.markdown("""
     <style>
-        /* Style pour le bouton Nouvelle Conversation */
         button[data-testid="baseButton-secondary"]:has(div:contains("➕ Nouvelle")) {
             background-color: #4CAF50 !important;
             color: white !important;
             font-weight: bold !important;
             border-radius: 20px !important;
-            border: none !important;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.2) !important;
-            transition: all 0.3s ease !important;
-        }
-        
-        button[data-testid="baseButton-secondary"]:has(div:contains("➕ Nouvelle")):hover {
-            background-color: #45a049 !important;
-            box-shadow: 0 4px 8px rgba(0,0,0,0.3) !important;
-            transform: translateY(-2px) !important;
-        }
-        
-        /* Style pour les notifications de succès */
-        div[data-testid="stSuccessMessage"] {
-            position: fixed !important;
-            top: 20px !important;
-            right: 20px !important;
-            z-index: 9999 !important;
-            animation: fadeOut 3s forwards !important;
-            animation-delay: 2s !important;
-        }
-        
-        @keyframes fadeOut {
-            from { opacity: 1; }
-            to { opacity: 0; visibility: hidden; }
         }
     </style>
     """, unsafe_allow_html=True)
@@ -598,6 +572,11 @@ def main():
     # Layout pour le champ de saisie et l'upload de fichier
     col1, col2 = st.columns([6, 1])
     
+    # Champ de saisie utilisateur
+    with col1:
+        user_input = st.text_area("Votre message:", height=100, key="user_input", 
+                                 label_visibility="collapsed")
+    
     # Gestion du fichier uploader
     with col2:
         uploaded_files = st.file_uploader(
@@ -607,23 +586,6 @@ def main():
             label_visibility="collapsed",
             key="file_upload"
         )
-    
-    # Indication du raccourci clavier
-    st.markdown("""
-    <div style="text-align: right; font-size: 0.8em; color: #888; margin-top: -15px; margin-bottom: 5px;">
-        Envoyez avec Cmd+Enter (Mac) ou Ctrl+Enter (PC)
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Gestion des réinitialisations du champ de saisie
-    if 'clear_input' in st.session_state and st.session_state.clear_input:
-        st.session_state.user_input = ""
-        st.session_state.clear_input = False
-    
-    # Champ de saisie utilisateur
-    with col1:
-        user_input = st.text_area("Votre message:", height=100, key="user_input", 
-                                 label_visibility="collapsed")
     
     # Traitement des fichiers téléchargés
     attached_docs = []
@@ -651,129 +613,118 @@ def main():
     # Bouton d'envoi
     send_button = st.button("Envoyer", key="send_message")
     
-    # Détection de l'envoi (bouton ou Cmd+Enter)
-    # Utilisation d'un état de session pour suivre si un message a été soumis
-    if 'submitted' not in st.session_state:
-        st.session_state.submitted = False
-        
-    send_pressed = send_button or (user_input and user_input.endswith('\n'))
-    
-    if send_pressed and not st.session_state.submitted:
-        # Marquer comme soumis pour éviter le double traitement
-        st.session_state.submitted = True
-        
-        # Vérification qu'il y a un message ou un document
+    # Traitement du message
+    if send_button or (user_input and user_input.endswith('\n')):
         if not user_input.strip() and not attached_docs:
             st.warning("Veuillez entrer un message ou joindre un document.")
-            st.session_state.submitted = False
-        else:
-            # Nettoie l'entrée utilisateur
-            cleaned_input = user_input.strip()
+            st.stop()
+        
+        # Si aucun message mais des documents attachés, on pose une question générique
+        if not user_input.strip() and attached_docs:
+            user_input = "Peux-tu analyser ce(s) document(s) et me dire ce qu'il(s) contien(nen)t?"
+        
+        # Nettoie l'entrée utilisateur
+        user_input = user_input.strip()
+        
+        # Ajoute le message à l'interface
+        add_message("user", user_input, attached_docs)
+        
+        # Prépare le contexte des documents si applicable
+        document_context = ""
+        if attached_docs:
+            # Sélectionne seulement les documents joints à ce message
+            docs_for_context = {name: content for name, content in st.session_state.documents.items() if name in attached_docs}
+            with st.spinner("Analyse des documents..."):
+                document_context = create_context_for_question(user_input, docs_for_context)
+        
+        # Prépare le prompt avec le contexte du document si nécessaire
+        if document_context:
+            # Prépare les messages pour l'API avec le contexte des documents
+            system_message = {"role": "system", "content": "Tu es un assistant intelligent qui répond en français. Tu peux analyser des documents fournis par l'utilisateur et répondre à des questions à leur sujet."}
             
-            # Cas spécial: document sans message
-            if not cleaned_input and attached_docs:
-                cleaned_input = "Peux-tu analyser ce(s) document(s) et me dire ce qu'il(s) contien(nen)t?"
+            # Construit la liste des messages pour l'API
+            messages = [system_message]
             
-            # Ajoute le message utilisateur à l'interface
-            add_message("user", cleaned_input, attached_docs)
+            # Ajoute les messages précédents mais pas le dernier (qui sera traité spécialement)
+            for msg in st.session_state.conversation_history[1:-1]:
+                messages.append(msg)
             
-            # Préparation du contexte des documents
-            document_context = ""
-            if attached_docs:
-                # Utilise seulement les documents joints à ce message
-                docs_for_context = {name: content for name, content in st.session_state.documents.items() 
-                                    if name in attached_docs}
-                with st.spinner("Analyse des documents..."):
-                    document_context = create_context_for_question(cleaned_input, docs_for_context)
-            
-            # Préparation des messages pour l'API
-            if document_context:
-                # Message système pour mode documents
-                system_message = {"role": "system", "content": "Tu es un assistant intelligent qui répond en français. Tu peux analyser des documents fournis par l'utilisateur et répondre à des questions à leur sujet."}
-                
-                # Liste des messages pour l'API (tous sauf le dernier)
-                messages = [system_message]
-                for msg in st.session_state.conversation_history[1:-1]:  # Exclut system et dernier message
-                    messages.append(msg)
-                
-                # Création du prompt avec contexte document
-                full_prompt = f"""Voici ma question: {cleaned_input}
+            # Prépare le dernier message de l'utilisateur avec le contexte des documents
+            full_prompt = f"""Voici ma question: {user_input}
 
 Je joins également les documents suivants pour référence:
 
 {document_context}
 
 Réponds à ma question en te basant sur les informations fournies dans ces documents si pertinent."""
-                
-                # Ajoute le prompt enrichi à la liste des messages
-                messages.append({"role": "user", "content": full_prompt})
-            else:
-                # Mode conversation normal sans documents
-                system_message = {"role": "system", "content": "Tu es un assistant intelligent qui répond en français même si la question est dans une autre langue."}
-                messages = [system_message] + st.session_state.conversation_history[1:]
             
-            # Récupération du client OpenAI
-            client = get_openai_client()
+            # Remplace le dernier message par celui avec le contexte
+            messages.append({"role": "user", "content": full_prompt})
+        else:
+            # Pas de document attaché, utilise les messages tels quels
+            system_message = {"role": "system", "content": "Tu es un assistant intelligent qui répond en français même si la question est dans une autre langue."}
+            messages = [system_message] + st.session_state.conversation_history[1:]
+        
+        # Récupère le client OpenAI mis en cache
+        client = get_openai_client()
+        
+        # Affiche un placeholder pour la réponse en streaming
+        with st.spinner("Génération de la réponse..."):
+            full_response = ""
             
-            # Génération de la réponse
-            with st.spinner("Génération de la réponse..."):
-                full_response = ""
+            try:
+                # Appel de l'API en mode streaming
+                response = client.chat.completions.create(
+                    model=MODEL,
+                    messages=messages,
+                    max_tokens=st.session_state.get("max_tokens", MAX_TOKENS),
+                    temperature=st.session_state.get("temperature", TEMPERATURE),
+                    top_p=TOP_P,
+                    presence_penalty=PRESENCE_PENALTY,
+                    stop=STOP_SEQUENCE,
+                    stream=True,
+                )
                 
-                try:
-                    # Appel API en streaming
-                    response = client.chat.completions.create(
-                        model=MODEL,
-                        messages=messages,
-                        max_tokens=st.session_state.get("max_tokens", MAX_TOKENS),
-                        temperature=st.session_state.get("temperature", TEMPERATURE),
-                        top_p=TOP_P,
-                        presence_penalty=PRESENCE_PENALTY,
-                        stop=STOP_SEQUENCE,
-                        stream=True,
-                    )
+                # Conteneur pour afficher la réponse en streaming
+                with st.container():
+                    # Commence l'affichage du message
+                    message_container = st.empty()
                     
-                    # Affichage en streaming
-                    with st.container():
-                        message_container = st.empty()
-                        
-                        for chunk in response:
-                            if chunk.choices and chunk.choices[0].delta.content:
-                                content = chunk.choices[0].delta.content
-                                full_response += content
-                                
-                                # Message avec icône générique
-                                message_html = f"""
-                                <div class="chat-message assistant">
-                                    <div class="avatar-assistant">🤖</div>
-                                    <div class="message">
-                                        {full_response}
-                                    </div>
+                    # Affichage en temps réel de la réponse
+                    for chunk in response:
+                        if chunk.choices and chunk.choices[0].delta.content:
+                            content = chunk.choices[0].delta.content
+                            full_response += content
+                            
+                            # Met à jour l'affichage du message avec l'icône générique
+                            message_html = f"""
+                            <div class="chat-message assistant">
+                                <div class="avatar-assistant">🤖</div>
+                                <div class="message">
+                                    {full_response}
                                 </div>
-                                """
-                                message_container.markdown(message_html, unsafe_allow_html=True)
-                                time.sleep(0.01)
-                    
-                    # Ajout de la réponse à l'historique
-                    add_message("assistant", full_response)
-                    
-                    # Indique que le champ de saisie doit être vidé
-                    st.session_state.clear_input = True
-                    
-                    # Réinitialise l'état de soumission pour le prochain message
-                    st.session_state.submitted = False
-                    
-                    # Supprime les données du file uploader
-                    if "file_upload" in st.session_state:
-                        del st.session_state.file_upload
-                    
-                    # Rafraîchit l'interface
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"Erreur lors de la génération de la réponse: {str(e)}")
-                    st.error(f"Détails de l'erreur: {type(e).__name__}")
-                    # Réinitialise l'état de soumission en cas d'erreur
-                    st.session_state.submitted = False
+                            </div>
+                            """
+                            message_container.markdown(message_html, unsafe_allow_html=True)
+                            time.sleep(0.01)
+                
+                # Ajoute la réponse complète à l'historique de conversation
+                add_message("assistant", full_response)
+                
+                # Pour réinitialiser le champ de saisie
+                st.session_state.user_input = ""
+                
+                # Nettoyage du champ de fichier
+                if "file_upload" in st.session_state:
+                    del st.session_state.file_upload
+                
+                # Rerun pour actualiser l'interface
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"Erreur lors de la génération de la réponse: {str(e)}")
+                # Log plus détaillé de l'erreur pour le débogage
+                st.error(f"Détails de l'erreur: {type(e).__name__}")
 
 # Point d'entrée de l'application
 if __name__ == "__main__":
