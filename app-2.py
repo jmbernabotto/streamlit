@@ -545,6 +545,9 @@ def main():
             ]
             st.session_state.chat_messages = []
             st.session_state.documents = {}
+            # Assurez-vous de réinitialiser également la clé form_submitted
+            if "form_submitted" in st.session_state:
+                st.session_state.form_submitted = False
             st.success("Nouvelle conversation démarrée!")
             st.rerun()
     
@@ -569,65 +572,81 @@ def main():
     # Zone de saisie pour la question
     st.write("### Envoyez un message")
     
-    # Layout pour le champ de saisie et l'upload de fichier
-    col1, col2 = st.columns([6, 1])
+    # Initialisation des clés de session
+    if "form_submitted" not in st.session_state:
+        st.session_state.form_submitted = False
     
-    # Champ de saisie utilisateur
-    with col1:
-        user_input = st.text_area("Votre message:", height=100, key="user_input", 
-                                 label_visibility="collapsed")
-    
-    # Gestion du fichier uploader
-    with col2:
-        uploaded_files = st.file_uploader(
-            "Joindre un document", 
-            type=["pdf", "docx", "txt"],
-            accept_multiple_files=True,
-            label_visibility="collapsed",
-            key="file_upload"
-        )
-    
-    # Traitement des fichiers téléchargés
-    attached_docs = []
-    
-    if uploaded_files:
-        st.write("Documents à joindre à ce message:")
-        cols = st.columns(4)
+    # On utilise un formulaire pour empêcher l'exécution multiple
+    with st.form(key="message_form", clear_on_submit=True):
+        # Layout pour le champ de saisie et l'upload de fichier
+        col1, col2 = st.columns([6, 1])
         
-        for i, uploaded_file in enumerate(uploaded_files):
-            col_index = i % 4
-            with cols[col_index]:
-                file_name = uploaded_file.name
-                st.write(f"📎 {file_name}")
-                
-                # Traitement du fichier
-                with st.spinner(f"Traitement de {file_name}..."):
-                    document_text = process_file(uploaded_file.getvalue(), file_name)
-                    if document_text:
-                        st.session_state.documents[file_name] = document_text
-                        attached_docs.append(file_name)
-                        st.success(f"✓ ({len(document_text)} caractères)")
-                    else:
-                        st.error("Échec du traitement")
+        # Champ de saisie utilisateur
+        with col1:
+            user_input = st.text_area("Votre message:", height=100, key="message_input", 
+                                    label_visibility="collapsed")
+        
+        # Gestion du fichier uploader dans un formulaire
+        with col2:
+            uploaded_files = st.file_uploader(
+                "Joindre un document", 
+                type=["pdf", "docx", "txt"],
+                accept_multiple_files=True,
+                label_visibility="collapsed",
+                key="file_upload_form"
+            )
+        
+        # Indication du raccourci clavier
+        st.markdown("""
+        <div style="text-align: right; font-size: 0.8em; color: #888; margin-top: 5px; margin-bottom: 10px;">
+            Ou utilisez le bouton Envoyer ci-dessous
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Bouton d'envoi intégré au formulaire
+        submit_button = st.form_submit_button("Envoyer")
     
-    # Bouton d'envoi
-    send_button = st.button("Envoyer", key="send_message")
-    
-    # Traitement du message
-    if send_button or (user_input and user_input.endswith('\n')):
+    # Traitement des fichiers téléchargés et de la soumission
+    if submit_button and not st.session_state.form_submitted:
+        # Marque le formulaire comme soumis pour éviter les doubles exécutions
+        st.session_state.form_submitted = True
+        
+        # Traitement des fichiers
+        attached_docs = []
+        if uploaded_files:
+            st.write("Documents à joindre à ce message:")
+            cols = st.columns(4)
+            
+            for i, uploaded_file in enumerate(uploaded_files):
+                col_index = i % 4
+                with cols[col_index]:
+                    file_name = uploaded_file.name
+                    st.write(f"📎 {file_name}")
+                    
+                    # Traitement du fichier
+                    with st.spinner(f"Traitement de {file_name}..."):
+                        document_text = process_file(uploaded_file.getvalue(), file_name)
+                        if document_text:
+                            st.session_state.documents[file_name] = document_text
+                            attached_docs.append(file_name)
+                            st.success(f"✓ ({len(document_text)} caractères)")
+                        else:
+                            st.error("Échec du traitement")
+        
+        # Traitement du message
         if not user_input.strip() and not attached_docs:
             st.warning("Veuillez entrer un message ou joindre un document.")
+            # Réinitialise l'état pour permettre une nouvelle soumission
+            st.session_state.form_submitted = False
             st.stop()
         
         # Si aucun message mais des documents attachés, on pose une question générique
-        if not user_input.strip() and attached_docs:
-            user_input = "Peux-tu analyser ce(s) document(s) et me dire ce qu'il(s) contien(nen)t?"
-        
-        # Nettoie l'entrée utilisateur
-        user_input = user_input.strip()
+        message_text = user_input.strip()
+        if not message_text and attached_docs:
+            message_text = "Peux-tu analyser ce(s) document(s) et me dire ce qu'il(s) contien(nen)t?"
         
         # Ajoute le message à l'interface
-        add_message("user", user_input, attached_docs)
+        add_message("user", message_text, attached_docs)
         
         # Prépare le contexte des documents si applicable
         document_context = ""
@@ -635,7 +654,7 @@ def main():
             # Sélectionne seulement les documents joints à ce message
             docs_for_context = {name: content for name, content in st.session_state.documents.items() if name in attached_docs}
             with st.spinner("Analyse des documents..."):
-                document_context = create_context_for_question(user_input, docs_for_context)
+                document_context = create_context_for_question(message_text, docs_for_context)
         
         # Prépare le prompt avec le contexte du document si nécessaire
         if document_context:
@@ -650,7 +669,7 @@ def main():
                 messages.append(msg)
             
             # Prépare le dernier message de l'utilisateur avec le contexte des documents
-            full_prompt = f"""Voici ma question: {user_input}
+            full_prompt = f"""Voici ma question: {message_text}
 
 Je joins également les documents suivants pour référence:
 
@@ -711,20 +730,18 @@ Réponds à ma question en te basant sur les informations fournies dans ces docu
                 # Ajoute la réponse complète à l'historique de conversation
                 add_message("assistant", full_response)
                 
-                # Pour réinitialiser le champ de saisie
-                st.session_state.user_input = ""
+                # Réinitialise l'état pour permettre une nouvelle soumission
+                st.session_state.form_submitted = False
                 
-                # Nettoyage du champ de fichier
-                if "file_upload" in st.session_state:
-                    del st.session_state.file_upload
-                
-                # Rerun pour actualiser l'interface
+                # Rafraîchit l'interface pour afficher la réponse complète
                 st.rerun()
                 
             except Exception as e:
                 st.error(f"Erreur lors de la génération de la réponse: {str(e)}")
                 # Log plus détaillé de l'erreur pour le débogage
                 st.error(f"Détails de l'erreur: {type(e).__name__}")
+                # Réinitialise l'état pour permettre une nouvelle soumission
+                st.session_state.form_submitted = False
 
 # Point d'entrée de l'application
 if __name__ == "__main__":
