@@ -125,7 +125,7 @@ if not API_BASE_URL or not API_KEY:
 
 # Paramètres du modèle
 MODEL = "llama-3.3-70b-instruct"
-MAX_TOKENS = 4096
+MAX_TOKENS = 8000
 TEMPERATURE = 0.15
 TOP_P = 0.9
 PRESENCE_PENALTY = 0.0
